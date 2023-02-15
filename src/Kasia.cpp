@@ -1,5 +1,24 @@
+/*
+  Kasia WiFi and IoT library for internet enabled devices
 
-#include <BromleySatWebServer.h>
+  Copyright (c) 2023 BromleySat Ltd. All rights reserved.
+
+  This library is free software; you can redistribute it and/or
+  modify it under the terms of the GNU General Public
+  License as published by the Free Software Foundation; either
+  version 3.0 of the License, or (at your option) any later version.
+
+  This library is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+  General Public License for more details.
+
+  You should have received a copy of the GNU General Public
+  License along with this library; if not, write to the Free Software
+  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+*/
+
+#include <Kasia.h>
 #include <Arduino.h>
 #include <WiFi.h>
 // #include <esp_wifi_types.h>
@@ -27,27 +46,41 @@ extern "C"
 } // extern "C"
 // #include "esp_wifi_types.h"
 
-bool BromleySatWebServer::_printToSerial = false;
+bool Kasia::_printToSerial = false;
+String Kasia::_payload = "";
 
-BromleySatWebServer::THandlerFunction BromleySatWebServer::test = []()
+const char *Kasia::_deviceId = "Device Id was not set";
+const char *Kasia::_lbl1 = NULL;
+float *Kasia::_flt1 = NULL;
+const char *Kasia::_lbl2 = NULL;
+bool *Kasia::_bln1 = NULL;
+
+// AsyncWebServer *Kasia::_server2 = NULL;
+
+Kasia::THandlerFunction Kasia::test = []()
 {
     Serial.println("static test");
 };
 
-BromleySatWebServer::TActionBoolCharPtr BromleySatWebServer::onGotIP = [](bool isNew, const char *ip)
+Kasia::TActionBoolCharPtr Kasia::onGotIP = [](bool isNew, const char *ip)
 {
-    BromleySatWebServer::println("Got ", isNew ? "new" : "same", " IP: ", ip);
+    Kasia::println("Got ", isNew ? "new" : "same", " IP: ", ip);
 };
 
-BromleySatWebServer::BromleySatWebServer()
+// #define HTTP_PORT_TO_USE 80
+
+// AsyncWebServer __server(HTTP_PORT_TO_USE);
+
+Kasia::Kasia()
 {
+    // _server2 = &__server;
 }
 
 /**
  * print text line to serial
  * @param text
  */
-void BromleySatWebServer::print(const char *text)
+void Kasia::print(const char *text)
 {
     if (_printToSerial)
         Serial.print(text);
@@ -57,7 +90,7 @@ void BromleySatWebServer::print(const char *text)
  * print text line to serial
  * @param text
  */
-void BromleySatWebServer::println(const char *text)
+void Kasia::println(const char *text)
 {
     if (_printToSerial)
         Serial.println(text);
@@ -68,7 +101,7 @@ void BromleySatWebServer::println(const char *text)
  * @param text
  */
 template <class... TArgs>
-void BromleySatWebServer::println(TArgs &&...args)
+void Kasia::println(TArgs &&...args)
 {
     if (!_printToSerial)
         return;
@@ -87,8 +120,11 @@ void BromleySatWebServer::println(TArgs &&...args)
  * print text line to serial
  * @param text
  */
-void BromleySatWebServer::temp(const char *label, float *ptr)
+void Kasia::bindData(const char *label, float *ptr)
 {
+    _lbl1 = label;
+    _flt1 = ptr;
+
     String temp = label;
     temp += " : ";
     temp += String(*ptr);
@@ -99,7 +135,17 @@ void BromleySatWebServer::temp(const char *label, float *ptr)
  * print text line to serial
  * @param text
  */
-bool BromleySatWebServer::isConnected()
+void Kasia::bindData(const char *label, bool *ptr)
+{
+    _lbl2 = label;
+    _bln1 = ptr;
+}
+
+/**
+ * print text line to serial
+ * @param text
+ */
+bool Kasia::isConnected()
 {
     return WiFi.status() == WL_CONNECTED;
 }
@@ -108,11 +154,11 @@ bool BromleySatWebServer::isConnected()
  * print text line to serial
  * @param text
  */
-void BromleySatWebServer::waitUntilConnected()
+void Kasia::waitUntilConnected()
 {
     while (true)
     {
-        if (BromleySatWebServer::isConnected())
+        if (Kasia::isConnected())
             break;
         // TODO can't use delay
         delay(1);
@@ -123,7 +169,7 @@ void BromleySatWebServer::waitUntilConnected()
  * print text line to serial
  * @param text
  */
-bool BromleySatWebServer::waitUntilConnected(unsigned int timeout)
+bool Kasia::waitUntilConnected(unsigned int timeout)
 {
     // get start time
 
@@ -131,13 +177,81 @@ bool BromleySatWebServer::waitUntilConnected(unsigned int timeout)
 
     while (true)
     {
-        if (BromleySatWebServer::isConnected())
+        if (Kasia::isConnected())
             return true;
         // TODO can't use delay
         delay(1);
     }
 
     return false;
+}
+
+// #define HTTP_PORT_TO_USE 80
+
+AsyncWebServer server2(80);
+
+void Kasia::startServer()
+{
+
+    HTTPClient http;
+
+    http.begin("https://bromleysat.space/data/index.html");
+    int httpResponseCode = http.GET();
+
+    if (httpResponseCode == HTTP_CODE_OK)
+    {
+        // Serial.print("HTTP Response code: ");
+        // Serial.println(httpResponseCode);
+        _payload = http.getString();
+    }
+    else
+    {
+        Serial.print("Error code: ");
+        Serial.println(httpResponseCode);
+    }
+    http.end();
+
+    // auto server2 = __server;//*_server2;
+
+    server2.on("/", HTTP_GET2, [](AsyncWebServerRequest *request)
+               {
+                   auto *response = request->beginResponse(200, "text/html", _payload);
+                   //TODO these cache headers do not work and can try meta tags
+                    //might need to return 304 when etag is the same
+                    //might need to use if-none-match header
+                   response->addHeader("cache-control", "public, s-maxage=36000, stale-while-revalidate=31536000");
+                   request->send(response); });
+
+    server2.on("/api/config", HTTP_GET2, [](AsyncWebServerRequest *request)
+               {
+      String json = "";
+          json += "{";
+          json += "\"version\":\""+String(KASIA_VERSION)+"\",";          
+          json += "\"deviceId\":\""+String(_deviceId)+"\"";
+          json += "}";
+
+      request->send(200, "application/json", json);
+      json = String(); });
+
+    server2.on("/api/data", HTTP_GET2, [](AsyncWebServerRequest *request)
+               {
+      String json = "";
+          json += "{";
+          if(_lbl1 != NULL) 
+          json += "\"" + String(_lbl1) + "\":"+ String(*_flt1);
+           if(_lbl2 != NULL) {
+                if(_lbl1 != NULL) json += ",";
+                json += "\"" + String(_lbl2) + "\":"+ String((int)*_bln1);          
+            }
+          json += "}";
+
+      request->send(200, "application/json", json);
+      json = String(); });
+
+    server2.begin();
+
+    Kasia::print(_deviceId);
+    Kasia::println(" server started!");
 }
 
 // #define ARDUHAL_LOG_LEVEL ARDUHAL_LOG_LEVEL_WARN
@@ -213,7 +327,7 @@ static void _arduino_event_cb(void *arg, esp_event_base_t event_base, int32_t ev
         // log_e("STA Got %sIP:" IPSTR, event->ip_changed ? "New " : "Same ", IP2STR(&event->ip_info.ip));
         //	#endif
 
-        BromleySatWebServer::onGotIP(event->ip_changed, IPAddress(IP2STR(&event->ip_info.ip)).toString().c_str());
+        Kasia::onGotIP(event->ip_changed, IPAddress(IP2STR(&event->ip_info.ip)).toString().c_str());
 
         arduino_event.event_id = ARDUINO_EVENT_WIFI_STA_GOT_IP;
         memcpy(&arduino_event.event_info.got_ip, event_data, sizeof(ip_event_got_ip_t));
@@ -233,7 +347,7 @@ static void _arduino_event_cb(void *arg, esp_event_base_t event_base, int32_t ev
  * print text line to serial TODO
  * @param text
  */
-void BromleySatWebServer::setBaud(long baud)
+void Kasia::setBaud(long baud)
 {
     if (baud > -1)
     {
@@ -246,7 +360,7 @@ void BromleySatWebServer::setBaud(long baud)
  * print text line to serial TODO
  * @param text
  */
-// void BromleySatWebServer::onGotIP(void onMsg (bool isNew, const char *ip))
+// void Kasia::onGotIP(void onMsg (bool isNew, const char *ip))
 // {
 //     //(&onMsg->)(true,"test");
 // }
@@ -254,7 +368,7 @@ void BromleySatWebServer::setBaud(long baud)
  * print text line to serial TODO
  * @param text
  */
-void BromleySatWebServer::startWiFi()
+void Kasia::startWiFi()
 {
     // if(isConnected()){
     //     return;
@@ -326,38 +440,54 @@ void BromleySatWebServer::startWiFi()
     {
         WiFi.begin(_ssid, _pwd);
     }
+
+    // TODO refactor to non blocking
+    waitUntilConnected();
+    startServer();
 }
 
 /**
  * print text line to serial TODO
  * @param text
  */
-void BromleySatWebServer::start(long baud, const char *ssid, const char *pwd)
+void Kasia::start(const char *deviceId, long baud, const char *ssid, const char *pwd)
 {
+    _deviceId = deviceId;
     _ssid = ssid;
     _pwd = pwd;
 
-    BromleySatWebServer::setBaud(baud);
-    BromleySatWebServer::startWiFi();
+    Kasia::setBaud(baud);
+    Kasia::startWiFi();
 }
 
 /**
  * print text line to serial TODO
  * @param text
  */
-void BromleySatWebServer::start(long baud)
+void Kasia::start(const char *deviceId, long baud)
 {
-    BromleySatWebServer::setBaud(baud);
-    BromleySatWebServer::startWiFi();
+    _deviceId = deviceId;
+    Kasia::setBaud(baud);
+    Kasia::startWiFi();
 }
 
 /**
  * print text line to serial TODO
  * @param text
  */
-void BromleySatWebServer::start()
+void Kasia::start(const char *deviceId)
 {
-    BromleySatWebServer::startWiFi();
+    _deviceId = deviceId;
+    Kasia::startWiFi();
 }
 
-BromleySatWebServer web;
+/**
+ * print text line to serial TODO
+ * @param text
+ */
+void Kasia::start()
+{
+    Kasia::startWiFi();
+}
+
+Kasia kasia;
