@@ -18,74 +18,49 @@
   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
-
-#ifndef BROMLEYSAT_WIFI_H
-#define BROMLEYSAT_WIFI_H
+#ifndef KASIA_H
+#define KASIA_H
 
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <HTTPClient.h>
+#include <KasiaEncryption.h>
+#include <KasiaLogger.h>
 
-// template <typename ...T>
-//     std::enable_if_t<(std::is_same_v<T, char>&&...)>
+#define KASIA_VERSION "0.0.3"
 
-// template <class... TArgs>
-//  std::enable_if_t<(std::is_same_v<T, char>&&...)>
-
-#define KASIA_VERSION "0.0.2"
-
-class Kasia
+class Kasia : KasiaEncryption
 {
 public:
+
+  typedef std::function<void(void)> TAction;
+  typedef std::function<void(bool, const char *)> TActionBoolCharPtr;
+  typedef std::function<std::string(void)> TFuncVoidString;
+
   Kasia();
   void bindData(const char *label, float *ptr);
   void bindData(const char *label, bool *ptr);
+  void bindData(const char *label, int *ptr);
+  void bindAction(const char *label, TAction action);
   void start(const char *deviceId, long baud, const char *ssid, const char *pwd);
   void start(const char *deviceId, long baud);
   void start(const char *deviceId);
   void start();
-  // TOOD either all prints are static or none are
-  // might use a separate logger class global instance
-  void print(const char *text);
-  void println(const char *text);
-  template <class... TArgs>
-  static void println(TArgs &&...args);
   bool isConnected();
   void waitUntilConnected();
   bool waitUntilConnected(unsigned int timeout);
-
-  typedef std::function<void(void)> THandlerFunction;
-  typedef std::function<void(bool, const char *)> TActionBoolCharPtr;
-
-  // TODO encapsulation
-  static THandlerFunction test;
   static TActionBoolCharPtr onGotIP;
 
 protected:
   const char *_ssid;
   const char *_pwd;
-
   static const char *_deviceId;
-  static const char *_lbl1;
-  static float *_flt1;
-
-  static const char *_lbl2;
-  static bool *_bln1;
-
-  // TODO make port configurable
-  // static AsyncWebServer *_server2;
-
-  // TODO don't store
-  static String _payload;
-
-  // const unsigned long _baud;
-  static bool _printToSerial;
-  void setBaud(long baud);
+  static std::string _dataConfig;
+  bool _isFirstElement = true;  
   void startWiFi();
   void startServer();
-  // void onGotIP(void onMsg (bool isNew, const char *ip));
 };
 
 extern Kasia kasia;
 
-#endif /* BROMLEYSAT_WIFI_H */
+#endif /* KASIA_H */

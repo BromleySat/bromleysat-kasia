@@ -21,99 +21,36 @@
 #include <Kasia.h>
 #include <Arduino.h>
 #include <WiFi.h>
-// #include <esp_wifi_types.h>
 
 extern "C"
 {
-    // #include <stdint.h>
-    // #include <stdbool.h>
-    // #include <stdio.h>
-    // #include <stdlib.h>
-    // #include <inttypes.h>
 #include <string.h>
-
 #include <esp_err.h>
 #include <esp_wifi.h>
 #include <esp_event.h>
 
 #include <esp_http_server.h>
-    // #include "lwip/ip_addr.h"
-    // #include "lwip/opt.h"
-    // #include "lwip/err.h"
-    // #include "lwip/dns.h"
-    // #include "dhcpserver/dhcpserver_options.h"
-
+#include "esp_task_wdt.h"
 } // extern "C"
-// #include "esp_wifi_types.h"
 
-bool Kasia::_printToSerial = false;
-String Kasia::_payload = "";
+// TODO better encapsulation
+std::vector<Kasia::TFuncVoidString> dataVectors;
 
+std::string Kasia::_dataConfig = "";
 const char *Kasia::_deviceId = "Device Id was not set";
-const char *Kasia::_lbl1 = NULL;
-float *Kasia::_flt1 = NULL;
-const char *Kasia::_lbl2 = NULL;
-bool *Kasia::_bln1 = NULL;
-
-// AsyncWebServer *Kasia::_server2 = NULL;
-
-Kasia::THandlerFunction Kasia::test = []()
-{
-    Serial.println("static test");
-};
 
 Kasia::TActionBoolCharPtr Kasia::onGotIP = [](bool isNew, const char *ip)
 {
-    Kasia::println("Got ", isNew ? "new" : "same", " IP: ", ip);
+    if (!kasiaLog.IsPrintingToSerial())
+        return;
+    Serial.print("Got ");
+    Serial.print(isNew ? "new" : "same");
+    Serial.print("IP: ");
+    Serial.println(ip);
 };
-
-// #define HTTP_PORT_TO_USE 80
-
-// AsyncWebServer __server(HTTP_PORT_TO_USE);
 
 Kasia::Kasia()
 {
-    // _server2 = &__server;
-}
-
-/**
- * print text line to serial
- * @param text
- */
-void Kasia::print(const char *text)
-{
-    if (_printToSerial)
-        Serial.print(text);
-}
-
-/**
- * print text line to serial
- * @param text
- */
-void Kasia::println(const char *text)
-{
-    if (_printToSerial)
-        Serial.println(text);
-}
-
-/**
- * print text line to serial
- * @param text
- */
-template <class... TArgs>
-void Kasia::println(TArgs &&...args)
-{
-    if (!_printToSerial)
-        return;
-    const char *texts[] = {args...};
-
-    std::string line = "";
-    for (auto &&t : texts)
-    {
-        line.append(t);
-    }
-
-    Serial.println(line.c_str());
 }
 
 /**
@@ -122,13 +59,17 @@ void Kasia::println(TArgs &&...args)
  */
 void Kasia::bindData(const char *label, float *ptr)
 {
-    _lbl1 = label;
-    _flt1 = ptr;
+    // TODO remove code duplication
+    if (!_isFirstElement)
+        _dataConfig.append("|");
+    else
+        _isFirstElement = false;
 
-    String temp = label;
-    temp += " : ";
-    temp += String(*ptr);
-    Serial.println(temp);
+    _dataConfig.append("7"); // float
+    _dataConfig.append(encode(label));
+
+    dataVectors.push_back([=]()
+                          { return std::to_string(*ptr); });
 }
 
 /**
@@ -137,8 +78,45 @@ void Kasia::bindData(const char *label, float *ptr)
  */
 void Kasia::bindData(const char *label, bool *ptr)
 {
-    _lbl2 = label;
-    _bln1 = ptr;
+    // TODO remove code duplication
+    if (!_isFirstElement)
+        _dataConfig.append("|");
+    else
+        _isFirstElement = false;
+
+    _dataConfig.append("9"); // bool
+    _dataConfig.append(encode(label));
+
+    dataVectors.push_back([=]()
+                          { return std::to_string((int16_t)*ptr); });
+}
+
+/**
+ * print text line to serial
+ * @param text
+ */
+void Kasia::bindData(const char *label, int *ptr)
+{
+    // TODO remove code duplication
+    if (!_isFirstElement)
+        _dataConfig.append("|");
+    else
+        _isFirstElement = false;
+
+    _dataConfig.append("5"); // int32
+    _dataConfig.append(encode(label));
+
+    dataVectors.push_back([=]()
+                          { return std::to_string(*ptr); });
+}
+
+/**
+ * print text line to serial
+ * @param text
+ */
+void Kasia::bindAction(const char *label, TAction action)
+{
+    // actions.emplace(label, action);
 }
 
 /**
@@ -160,7 +138,6 @@ void Kasia::waitUntilConnected()
     {
         if (Kasia::isConnected())
             break;
-        // TODO can't use delay
         delay(1);
     }
 }
@@ -179,79 +156,144 @@ bool Kasia::waitUntilConnected(unsigned int timeout)
     {
         if (Kasia::isConnected())
             return true;
-        // TODO can't use delay
         delay(1);
     }
 
     return false;
 }
 
-// #define HTTP_PORT_TO_USE 80
+#ifdef KASIA_OVERRIDE_HTTP_PORT
+#define KASIA_SERVER_HTTP_PORT KASIA_OVERRIDE_HTTP_PORT
+#else
+#define KASIA_SERVER_HTTP_PORT 80 // default http port
+#endif
 
-AsyncWebServer server2(80);
+AsyncWebServer kasiaServer(KASIA_SERVER_HTTP_PORT);
+
+#define SERVER_URI "https://dev-http-client.bromleysat.space"
 
 void Kasia::startServer()
 {
+    kasiaServer.on("/", HTTP_GET2, [](AsyncWebServerRequest *request)
+                   {
+        HTTPClient http;
 
-    HTTPClient http;
+        http.begin(SERVER_URI);
+        http.addHeader("v", KASIA_VERSION);
+        http.addHeader("i", encode(_deviceId).c_str());
 
-    http.begin("https://bromleysat.space/data/index.html");
-    int httpResponseCode = http.GET();
+        if (!_dataConfig.empty())
+        {
+            http.addHeader("d", _dataConfig.c_str());
+            Serial.println(_dataConfig.c_str());
+        }
 
-    if (httpResponseCode == HTTP_CODE_OK)
-    {
-        // Serial.print("HTTP Response code: ");
-        // Serial.println(httpResponseCode);
-        _payload = http.getString();
-    }
-    else
-    {
-        Serial.print("Error code: ");
-        Serial.println(httpResponseCode);
-    }
-    http.end();
+        //TODO full actions config
+        http.addHeader("a", "UHVtcFdhdGVy");
 
-    // auto server2 = __server;//*_server2;
+        // TODO remove this and test failure scenarios
+        http.addHeader("h", WiFi.localIP().toString());
 
-    server2.on("/", HTTP_GET2, [](AsyncWebServerRequest *request)
-               {
-                   auto *response = request->beginResponse(200, "text/html", _payload);
-                   //TODO these cache headers do not work and can try meta tags
-                    //might need to return 304 when etag is the same
-                    //might need to use if-none-match header
-                   response->addHeader("cache-control", "public, s-maxage=36000, stale-while-revalidate=31536000");
-                   request->send(response); });
+        int httpResponseCode = http.GET();
 
-    server2.on("/api/config", HTTP_GET2, [](AsyncWebServerRequest *request)
-               {
-      String json = "";
-          json += "{";
-          json += "\"version\":\""+String(KASIA_VERSION)+"\",";          
-          json += "\"deviceId\":\""+String(_deviceId)+"\"";
-          json += "}";
+        String payload;
 
-      request->send(200, "application/json", json);
-      json = String(); });
+        if (httpResponseCode == HTTP_CODE_OK)
+        {
+            payload = http.getString();
+        }
+        else
+        {
+            Serial.print("Error code: ");
+            Serial.println(httpResponseCode);
+            payload = "Error: Please wait a bit and try to reload the page";
+        }
+        http.end();
+    
+        std::string t = SERVER_URI;
+        t.append("/_next");
+        payload.replace("/_next", t.c_str());
+        t.erase();
 
-    server2.on("/api/data", HTTP_GET2, [](AsyncWebServerRequest *request)
-               {
-      String json = "";
-          json += "{";
-          if(_lbl1 != NULL) 
-          json += "\"" + String(_lbl1) + "\":"+ String(*_flt1);
-           if(_lbl2 != NULL) {
-                if(_lbl1 != NULL) json += ",";
-                json += "\"" + String(_lbl2) + "\":"+ String((int)*_bln1);          
+        auto *response = request->beginResponse(200, "text/html", payload);
+        //auto *response = request->beginResponseStream(200, "text/html");
+
+        //TODO these cache headers do not work and can try meta tags
+        //might need to return 304 when etag is the same
+        //might need to use if-none-match header
+        response->addHeader("cache-control", "public, s-maxage=36000, stale-while-revalidate=31536000");
+        request->send(response); });
+
+
+    kasiaServer.onNotFound([](AsyncWebServerRequest *request)
+                           {
+        Serial.println("404 for all");
+        request->send(404); });
+
+    kasiaServer.on("/d", HTTP_GET2, [](AsyncWebServerRequest *request)
+                   {
+        auto currentTimestamp = esp_timer_get_time();
+
+        if(request->params() != (size_t)1){
+            request->send(400, "text/plain", "Unexpected number of parameters"); 
+            return;
+        }
+        auto isFirstElement = true;
+
+        int64_t t = std::strtoull(request->getParam(0)->value().c_str(),NULL,0);
+        
+        //TODO test with reset/restart of ESP32 and how the data chart gets confused if at all
+        //TODO same test for logs 
+        std::string data = std::to_string(currentTimestamp);
+        data.append("|");
+
+        for (auto &&v : dataVectors)
+        {
+            if(!isFirstElement) data.append(",");
+            else isFirstElement = false;  
+            data.append(v());
+        }
+
+        auto filteredLogs = kasiaLog.FilteredLogs(t);
+
+        if(filteredLogs.size()> 0)
+        {
+            std::string logsText = "|";
+            auto isFirstLog = true;
+
+            for (auto &&log : filteredLogs)
+            {
+                if(!isFirstLog) logsText.append(",");
+                else isFirstLog = false; 
+
+                logsText.append(std::to_string(currentTimestamp - log.Timestamp));
+                logsText.append(encode(log.Text));                        
             }
-          json += "}";
 
-      request->send(200, "application/json", json);
-      json = String(); });
+            data.append(logsText);
+        }
+      
+        request->send(200, "text/plain", String(data.c_str())); });
 
-    server2.begin();
+    int index = 0;
+    std::string strIndex = "/";
+    strIndex.append(std::to_string(index));
 
-    Kasia::print(_deviceId);
-    Kasia::println(" server started!");
+    kasiaServer.on(strIndex.c_str(), HTTP_POST, [](AsyncWebServerRequest *request)
+                   {
+        auto currentTimestamp = esp_timer_get_time();
+
+        // auto action = actions.at("testAction");
+        // action();
+
+        request->send(204); });
+
+    kasiaServer.begin();
+
+    // TODO handle it cleaner with logger
+    std::string str = _deviceId;
+    str.append(" server started!");
+    kasiaLog.Info(str);
 }
 
 // #define ARDUHAL_LOG_LEVEL ARDUHAL_LOG_LEVEL_WARN
@@ -282,7 +324,7 @@ static void _arduino_event_cb(void *arg, esp_event_base_t event_base, int32_t ev
      * */
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START)
     {
-        log_e("STA Started");
+        //  log_e("STA Started");
         arduino_event.event_id = ARDUINO_EVENT_WIFI_STA_START;
     }
     else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_STOP)
@@ -347,27 +389,6 @@ static void _arduino_event_cb(void *arg, esp_event_base_t event_base, int32_t ev
  * print text line to serial TODO
  * @param text
  */
-void Kasia::setBaud(long baud)
-{
-    if (baud > -1)
-    {
-        _printToSerial = true;
-        Serial.begin(baud);
-    }
-}
-
-/**
- * print text line to serial TODO
- * @param text
- */
-// void Kasia::onGotIP(void onMsg (bool isNew, const char *ip))
-// {
-//     //(&onMsg->)(true,"test");
-// }
-/**
- * print text line to serial TODO
- * @param text
- */
 void Kasia::startWiFi()
 {
     // if(isConnected()){
@@ -383,7 +404,7 @@ void Kasia::startWiFi()
 
     auto res = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &_arduino_event_cb, NULL, NULL);
 
-    log_e("   ||");
+    // log_e("   ||");
 
     int temp = res;
 
@@ -393,7 +414,7 @@ void Kasia::startWiFi()
 
     if (res == ESP_OK)
     {
-        log_e("ESP_OK");
+        // log_e("ESP_OK");
     }
     else if (res == ESP_FAIL)
     {
@@ -416,7 +437,7 @@ void Kasia::startWiFi()
         log_e("UNKNOWN");
     }
 
-    log_e("||   ");
+    // log_e("||   ");
 
     if (res)
     {
@@ -456,7 +477,7 @@ void Kasia::start(const char *deviceId, long baud, const char *ssid, const char 
     _ssid = ssid;
     _pwd = pwd;
 
-    Kasia::setBaud(baud);
+    kasiaLog.SetConfig(baud, true);
     Kasia::startWiFi();
 }
 
@@ -467,7 +488,7 @@ void Kasia::start(const char *deviceId, long baud, const char *ssid, const char 
 void Kasia::start(const char *deviceId, long baud)
 {
     _deviceId = deviceId;
-    Kasia::setBaud(baud);
+    kasiaLog.SetConfig(baud, true);
     Kasia::startWiFi();
 }
 
