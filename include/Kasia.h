@@ -25,13 +25,20 @@
 #include <ESPAsyncWebServer.h>
 #include <HTTPClient.h>
 #include <KasiaEncryption.h>
+#include <KasiaCachedClient.h>
 #include <KasiaLogger.h>
 
-#define KASIA_VERSION "0.0.3"
+#define KASIA_VERSION "0.1.0"
 
 #define KASIA_TYPE_INT32 "5"
 #define KASIA_TYPE_FLOAT "7"
 #define KASIA_TYPE_BOOL "9"
+
+#ifdef KASIA_OVERRIDE_HTTP_PORT
+#define KASIA_SERVER_HTTP_PORT KASIA_OVERRIDE_HTTP_PORT
+#else
+#define KASIA_SERVER_HTTP_PORT 80 // default http port
+#endif
 
 class Kasia : KasiaEncryption
 {
@@ -47,6 +54,7 @@ public:
   void start(const char *deviceId);
   void start();
   bool isConnected();
+  bool waitUntilConnected(ulong timeout);
   void waitUntilConnected();
   static TActionBoolCharPtr onGotIP;
 
@@ -55,11 +63,15 @@ protected:
   const char *_pwd;
   static const char *_deviceId;
   static std::string _dataConfig;
+  static KasiaCachedClient *_client;
   bool _isFirstElement = true;
+  bool _isStartCalled = false;
 
   void startWiFi();
   void startServer();
   void bindData(const char *label, const char *type, Kasia::TFuncVoidString valueLambda);
+
+  static void _arduino_event_cb(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 };
 
 extern Kasia kasia;
