@@ -33,12 +33,7 @@ extern "C"
 std::vector<Kasia::TFuncVoidString> dataVectors;
 std::string Kasia::_dataConfig = "";
 const char *Kasia::_deviceId = "Kasia Device";
-
-#ifdef KASIA_OVERRIDE_HTTP_PORT
-#define KASIA_SERVER_HTTP_PORT KASIA_OVERRIDE_HTTP_PORT
-#else
-#define KASIA_SERVER_HTTP_PORT 80 // default http port
-#endif
+KasiaCachedClient *Kasia::_client = nullptr;
 
 AsyncWebServer kasiaServer(KASIA_SERVER_HTTP_PORT);
 
@@ -127,6 +122,8 @@ void Kasia::bindData(const char *label, const char *type, Kasia::TFuncVoidString
 
 /**
  * Check if the device is currently connected to WiFi
+ * @return
+ * Returns true if connected, otherwise false
  */
 bool Kasia::isConnected()
 {
@@ -134,17 +131,20 @@ bool Kasia::isConnected()
 }
 
 /**
- * Blocking call to wait until the device is connected to WiFi
+ * Blocking call to wait until the device is connected to WiFi. Returns to true if successful
+ * @param timeout
+ * Timeout in milliseconds to wait for connection. If takes longer than this, will stop trying and will return false
  */
-void Kasia::waitUntilConnected()
+bool Kasia::waitUntilConnected(ulong timeout)
 {
     int8_t notConnectedAttempts = 0;
     auto prevStatus = WL_IDLE_STATUS;
+    auto startTime = millis();
 
-    while (true)
+    while (timeout == ULONG_MAX || (startTime - millis()) > 0)
     {
         if (Kasia::isConnected())
-            break;
+            return true;
 
         if (WiFi.status() == WL_NO_SSID_AVAIL)
         {
@@ -191,6 +191,16 @@ void Kasia::waitUntilConnected()
 
         delay(1000);
     }
+
+    return false;
+}
+
+/**
+ * Blocking call to wait until the device is connected to WiFi
+ */
+void Kasia::waitUntilConnected()
+{
+    waitUntilConnected(ULONG_MAX);
 }
 
 /**
@@ -200,33 +210,8 @@ void Kasia::startServer()
 {
     kasiaServer.on("/", HTTP_GET2, [](AsyncWebServerRequest *request)
                    {
-        HTTPClient http;
 
-        http.begin(SERVER_URI);
-        http.addHeader("v", KASIA_VERSION);
-        http.addHeader("i", encode(_deviceId).c_str());
-
-        if (!_dataConfig.empty())
-        {
-            http.addHeader("d", _dataConfig.c_str());
-        }
-
-        http.addHeader("h", WiFi.localIP().toString());
-        int httpResponseCode = http.GET();
-
-        String payload;
-
-        if (httpResponseCode == HTTP_CODE_OK)
-        {
-            payload = http.getString();
-        }
-        else
-        {
-            Serial.print("Error code: ");
-            Serial.println(httpResponseCode);
-            payload = "Error: Please wait a bit and try to reload the page";
-        }
-        http.end();
+        String payload = _client->get().c_str();
     
         std::string t = SERVER_URI;
         t.append("/_next");
@@ -363,12 +348,10 @@ static std::string getReason(wifi_err_reason_t reason)
     }
 }
 
-static void _arduino_event_cb(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+void Kasia::_arduino_event_cb(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
     arduino_event_t arduino_event;
     arduino_event.event_id = ARDUINO_EVENT_MAX;
-
-    // logInfo("Got event EventBase:", event_base, " EventId:", event_id);
 
     /*
      * STA
@@ -412,7 +395,6 @@ static void _arduino_event_cb(void *arg, esp_event_base_t event_base, int32_t ev
             logInfo("WiFi disconnected because ",
                     getReason((wifi_err_reason_t)arduino_event.event_info.wifi_sta_disconnected.reason),
                     ". Attempting to reconnect");
-            // WiFi.reconnect();
             connected = false;
         }
 
@@ -421,6 +403,10 @@ static void _arduino_event_cb(void *arg, esp_event_base_t event_base, int32_t ev
     else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
     {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        if (event->ip_changed)
+        {
+            _client->setHeader("h", IPAddress(IP2STR(&event->ip_info.ip)).toString().c_str());
+        }
         Kasia::onGotIP(event->ip_changed, IPAddress(IP2STR(&event->ip_info.ip)).toString().c_str());
         connected = true;
         arduino_event.event_id = ARDUINO_EVENT_WIFI_STA_GOT_IP;
@@ -428,14 +414,14 @@ static void _arduino_event_cb(void *arg, esp_event_base_t event_base, int32_t ev
     }
     else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_LOST_IP)
     {
-        logInfo("STA IP Lost");
+        logInfo("WiFi IP Lost");
         arduino_event.event_id = ARDUINO_EVENT_WIFI_STA_LOST_IP;
         WiFi.reconnect();
-        // Kasia::startWiFi();
     }
     else
     {
-        logInfo("Unknown event. EventBase:", event_base, " EventId:", event_id);
+        if (event_id != 21)
+            logInfo("Unknown event. EventBase:", event_base, " EventId:", event_id);
     }
 }
 
@@ -443,6 +429,7 @@ static void _arduino_event_cb(void *arg, esp_event_base_t event_base, int32_t ev
  * Start WiFi connection using credentials that were set previously
  * Blocking call
  */
+
 void Kasia::startWiFi()
 {
     esp_err_t err = esp_event_loop_create_default();
@@ -452,7 +439,7 @@ void Kasia::startWiFi()
         return; // err;
     }
 
-    auto res = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &_arduino_event_cb, NULL, NULL);
+    auto res = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &Kasia::_arduino_event_cb, NULL, NULL);
 
     if (res == ESP_OK)
     {
@@ -488,8 +475,6 @@ void Kasia::startWiFi()
         log_e("event_handler_instance_register for IP_EVENT Failed!");
     }
 
-    // WiFi.onEvent()
-
     //  start connection. This returns the result but we do not wait for it
     if (_ssid == NULL || _pwd == NULL)
     {
@@ -501,7 +486,15 @@ void Kasia::startWiFi()
         WiFi.begin(_ssid, _pwd);
     }
 
-    waitUntilConnected();
+    _client = new KasiaCachedClient(SERVER_URI);
+    _client->setHeader("v", KASIA_VERSION);
+    _client->setHeader("i", encode(_deviceId).c_str());
+
+    if (!_dataConfig.empty())
+    {
+        _client->setHeader("d", _dataConfig.c_str());
+    }
+
     startServer();
 }
 
@@ -518,6 +511,10 @@ void Kasia::startWiFi()
  */
 void Kasia::start(const char *deviceId, long baud, const char *ssid, const char *pwd)
 {
+    if (_isStartCalled)
+        return; // defensive programming
+    _isStartCalled = true;
+
     _deviceId = deviceId;
     _ssid = ssid;
     _pwd = pwd;
@@ -536,6 +533,10 @@ void Kasia::start(const char *deviceId, long baud, const char *ssid, const char 
  */
 void Kasia::start(const char *deviceId, long baud)
 {
+    if (_isStartCalled)
+        return; // defensive programming
+    _isStartCalled = true;
+
     _deviceId = deviceId;
     kasiaLog.SetConfig(baud, true);
     Kasia::startWiFi();
@@ -549,6 +550,10 @@ void Kasia::start(const char *deviceId, long baud)
  */
 void Kasia::start(const char *deviceId)
 {
+    if (_isStartCalled)
+        return; // defensive programming
+    _isStartCalled = true;
+
     _deviceId = deviceId;
     Kasia::startWiFi();
 }
@@ -559,6 +564,10 @@ void Kasia::start(const char *deviceId)
  */
 void Kasia::start()
 {
+    if (_isStartCalled)
+        return; // defensive programming
+    _isStartCalled = true;
+
     Kasia::startWiFi();
 }
 

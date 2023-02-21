@@ -1,7 +1,7 @@
 {
   "name":"Kasia",
-  "description":"IoT Library and Framework for ESP32",
-  "keywords":"esp32,wifi,network,http,iot",
+  "description":"Kasia ia an IoT Library and Framework for ESP32. It aims to eliminate the need to write any WiFi or API related code and to completely cover that functionality.",
+  "keywords":"esp32,wifi,network,http,iot,web",
   "authors":
   {
     "name": "BromleySat",
@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/BromleySat/bromleysat-kasia.git"
   },
-  "version": "0.0.3",
+  "version": "0.1.0",
   "license": "LGPL-3.0",
   "frameworks": "arduino",
   "platforms": "espressif32",
