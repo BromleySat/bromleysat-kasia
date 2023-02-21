@@ -1,3 +1,13 @@
+/*
+    This is a simple example of the use of the Kasia framework
+
+    It connects to WiFi and starts a WebServer at port 80
+    Once you navigate to the main page for your device
+    You will see a simple page with your DeviceId or DeviceName in the title
+    And a single log on the web page's log section that will say that 'Hello, World! server started!'
+*/
+
+
 #include <Kasia.h>
 
 void setup()
@@ -24,5 +34,5 @@ void setup()
 
 void loop()
 {
-    // not used in this example
+    // your code
 }
