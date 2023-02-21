@@ -12,6 +12,6 @@ v0.1.0 (2023-02-21) Stable BETA
 v0.2.0 (2023-??-??) Config
 -------
 
-* Moved non-Kasia headers to src to avoid confusion
+* non-Kasia headers were moved to src to avoid confusion
 * ??
 * ??
