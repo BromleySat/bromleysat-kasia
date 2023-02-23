@@ -34,10 +34,13 @@ std::vector<Kasia::TFuncVoidString> dataVectors;
 std::string Kasia::_dataConfig = "";
 const char *Kasia::_deviceId = "Kasia Device";
 KasiaCachedClient *Kasia::_client = nullptr;
+TaskHandle_t Kasia::_kasiaOverwatchTaskHandle = NULL;
 
 AsyncWebServer kasiaServer(KASIA_SERVER_HTTP_PORT);
 
 #define SERVER_URI "https://kasia-http-demo.bromleysat.space"
+
+#define MAX_WIFI_ATTEMPTS 4
 
 Kasia::TActionBoolCharPtr Kasia::onGotIP = [](bool isNew, const char *ip)
 {
@@ -141,7 +144,7 @@ bool Kasia::waitUntilConnected(ulong timeout)
     auto prevStatus = WL_IDLE_STATUS;
     auto startTime = millis();
 
-    while (timeout == ULONG_MAX || (startTime - millis()) > 0)
+    while (timeout == ULONG_MAX || (millis() - startTime) < timeout)
     {
         if (Kasia::isConnected())
             return true;
@@ -154,42 +157,38 @@ bool Kasia::waitUntilConnected(ulong timeout)
                 notConnectedAttempts = 0;
                 prevStatus = WL_NO_SSID_AVAIL;
             }
-            delay(5000);
+            vTaskDelay(pdMS_TO_TICKS(5000));
         }
         else if (WiFi.status() == WL_DISCONNECTED)
         {
-            if (notConnectedAttempts > 10)
+            if (notConnectedAttempts > MAX_WIFI_ATTEMPTS)
             {
                 if (prevStatus != WL_DISCONNECTED)
                 {
                     logInfo("WiFi connection error: The WiFi network is there but the password may well be incorrect");
                     prevStatus = WL_DISCONNECTED;
                 }
-
-                delay(5000);
+                vTaskDelay(pdMS_TO_TICKS(5000));
             }
             else
                 notConnectedAttempts++;
         }
         else if (WiFi.status() == WL_CONNECT_FAILED)
         {
-            if (notConnectedAttempts > 10)
+            if (notConnectedAttempts > MAX_WIFI_ATTEMPTS)
             {
                 if (prevStatus != WL_CONNECT_FAILED)
                 {
                     logInfo("WiFi connection error: Connection failed and will try to reset connection");
                     prevStatus = WL_CONNECT_FAILED;
                     notConnectedAttempts = 0;
-                    WiFi.reconnect();
                 }
-
-                delay(5000);
+                vTaskDelay(pdMS_TO_TICKS(5000));
             }
             else
                 notConnectedAttempts++;
         }
-
-        delay(1000);
+        vTaskDelay(pdMS_TO_TICKS(5000));
     }
 
     return false;
@@ -264,11 +263,7 @@ void Kasia::startServer()
         request->send(200, "text/plain", String(data.c_str())); });
 
     kasiaServer.begin();
-
-    // TODO handle it cleaner with logger
-    std::string str = _deviceId;
-    str.append(" server started!");
-    kasiaLog.Info(str);
+    logInfo(_deviceId, " server started!");
 }
 
 bool connected = false;
@@ -398,7 +393,7 @@ void Kasia::_arduino_event_cb(void *arg, esp_event_base_t event_base, int32_t ev
             connected = false;
         }
 
-        WiFi.reconnect();
+        kasia.reconnect();
     }
     else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
     {
@@ -409,6 +404,7 @@ void Kasia::_arduino_event_cb(void *arg, esp_event_base_t event_base, int32_t ev
         }
         Kasia::onGotIP(event->ip_changed, IPAddress(IP2STR(&event->ip_info.ip)).toString().c_str());
         connected = true;
+        kasia.stopOverwatch();
         arduino_event.event_id = ARDUINO_EVENT_WIFI_STA_GOT_IP;
         memcpy(&arduino_event.event_info.got_ip, event_data, sizeof(ip_event_got_ip_t));
     }
@@ -416,7 +412,7 @@ void Kasia::_arduino_event_cb(void *arg, esp_event_base_t event_base, int32_t ev
     {
         logInfo("WiFi IP Lost");
         arduino_event.event_id = ARDUINO_EVENT_WIFI_STA_LOST_IP;
-        WiFi.reconnect();
+        kasia.reconnect();
     }
     else
     {
@@ -425,11 +421,40 @@ void Kasia::_arduino_event_cb(void *arg, esp_event_base_t event_base, int32_t ev
     }
 }
 
+void Kasia::overwatchTask(void *param)
+{
+    while (true)
+    {
+        kasia.waitUntilConnected();
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
+}
+
+void Kasia::startOverwatch()
+{
+    if (!_kasiaOverwatchTaskHandle)
+    {
+        xTaskCreatePinnedToCore(overwatchTask, "KasiaWiFiOverwatch", 4096, NULL, 1, &Kasia::_kasiaOverwatchTaskHandle, ARDUINO_EVENT_RUNNING_CORE);
+        if (!_kasiaOverwatchTaskHandle)
+        {
+            logInfo("Kasia WiFi Overwatch Task Start Failed!");
+        }
+    }
+}
+
+void Kasia::stopOverwatch()
+{
+    if (_kasiaOverwatchTaskHandle)
+    {
+        vTaskDelete(_kasiaOverwatchTaskHandle);
+        _kasiaOverwatchTaskHandle = NULL;
+    }
+}
+
 /**
  * Start WiFi connection using credentials that were set previously
- * Blocking call
+ * Non blocking call
  */
-
 void Kasia::startWiFi()
 {
     esp_err_t err = esp_event_loop_create_default();
@@ -440,35 +465,6 @@ void Kasia::startWiFi()
     }
 
     auto res = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &Kasia::_arduino_event_cb, NULL, NULL);
-
-    if (res == ESP_OK)
-    {
-    }
-    else if (res == ESP_FAIL)
-    {
-        log_e("ESP_FAIL");
-    }
-    else if (res == ESP_ERR_NO_MEM)
-    {
-        log_e("ESP_ERR_NO_MEM");
-    }
-    else if (res == ESP_ERR_INVALID_ARG)
-    {
-        log_e("ESP_ERR_INVALID_ARG");
-    }
-    else if (res == ESP_ERR_INVALID_STATE)
-    {
-        log_e("ESP_ERR_INVALID_STATE");
-    }
-    else
-    {
-        log_e("UNKNOWN");
-    }
-
-    if (res)
-    {
-        log_e("event_handler_instance_register for WIFI_EVENT Failed!");
-    }
 
     if (esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID, &_arduino_event_cb, NULL, NULL))
     {
@@ -486,6 +482,8 @@ void Kasia::startWiFi()
         WiFi.begin(_ssid, _pwd);
     }
 
+    startOverwatch();
+
     _client = new KasiaCachedClient(SERVER_URI);
     _client->setHeader("v", KASIA_VERSION);
     _client->setHeader("i", encode(_deviceId).c_str());
@@ -496,6 +494,14 @@ void Kasia::startWiFi()
     }
 
     startServer();
+}
+
+void Kasia::reconnect()
+{
+    WiFi.reconnect();
+    //Restarting overwatch creates WiFi connection issues
+    //Can either keep it running permanently or a single use only
+    //startOverwatch();
 }
 
 /**

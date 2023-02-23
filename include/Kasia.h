@@ -28,7 +28,7 @@
 #include <KasiaCachedClient.h>
 #include <KasiaLogger.h>
 
-#define KASIA_VERSION "0.1.0"
+#define KASIA_VERSION "0.1.1"
 
 #define KASIA_TYPE_INT32 "5"
 #define KASIA_TYPE_FLOAT "7"
@@ -67,11 +67,17 @@ protected:
   bool _isFirstElement = true;
   bool _isStartCalled = false;
 
+  static TaskHandle_t _kasiaOverwatchTaskHandle;
+
+  void startOverwatch();
+  void stopOverwatch();
   void startWiFi();
+  void reconnect();
   void startServer();
   void bindData(const char *label, const char *type, Kasia::TFuncVoidString valueLambda);
 
   static void _arduino_event_cb(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
+  static void overwatchTask(void *param);
 };
 
 extern Kasia kasia;
